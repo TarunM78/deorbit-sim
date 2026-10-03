@@ -1,0 +1,6 @@
+# local-only material
+DEORBIT.pdf
+renders/
+*.bak
+nohup.out
+__pycache__/

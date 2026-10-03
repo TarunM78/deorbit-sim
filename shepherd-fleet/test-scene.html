@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>scene.js harness — Shepherd Fleet</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1128; color: #cfd6ee; font: 12px "Fira Code", Consolas, monospace; overflow: hidden; }
+  #view { position: absolute; inset: 0; }
+  #hud { position: absolute; left: 12px; top: 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; z-index: 2; }
+  #hud button { background: #16204a; color: #cfd6ee; border: 1px solid #2c3a75; border-radius: 4px; padding: 4px 8px; font: inherit; cursor: pointer; }
+  #hud button.on { background: #3ecfb5; color: #0b1128; border-color: #3ecfb5; }
+  #info { position: absolute; left: 12px; bottom: 12px; z-index: 2; white-space: pre; line-height: 1.5; background: rgba(11,17,40,0.6); padding: 6px 8px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="hud">
+  <button data-cam="earth" class="on">earth</button>
+  <button data-cam="follow">follow</button>
+  <button data-cam="cluster">cluster</button>
+  <button id="labels" class="on">labels</button>
+  <button id="orbit" class="on">mouse orbit</button>
+  <button id="regime">regime: LEO</button>
+  <button id="warp">warp ×120</button>
+  <button id="pause">pause</button>
+  <button id="stress" title="590 km / 98° sun-sync shepherd, phase wait, current 0, decaying 350x790 km target rebuilt every frame, plus NaN/Infinity poisoned targets">stress: SSO wait</button>
+</div>
+<div id="info"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+<script>
+// Load physics.js if present, otherwise the stub (harness only); then scene.js; then start.
+(function loadChain() {
+  function load(src, ok, fail) { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = fail; document.head.appendChild(s); }
+  function then() { load('js/scene.js', start, () => { document.getElementById('info').textContent = 'failed to load js/scene.js'; }); }
+  load('js/physics.js', () => { if (!window.SIM || !SIM.phys) load('js/physics-stub.js', then); else then(); },
+       () => load('js/physics-stub.js', then));
+
+  const D = Math.PI / 180;
+  const STATUSES = ['idle', 'idle', 'targeted', 'pushing', 'released', 'decaying', 'kitted', 'kitwait', 'kitburn', 'graveyard', 'skipped', 'idle'];
+  const SITES = { LEO: { lat: 62.9 * D, lon: 40.6 * D, name: 'Plesetsk' }, GEO: { lat: 5.2 * D, lon: -52.8 * D, name: 'Kourou' } };
+  let state, regime = 'LEO', warp = 120, paused = false, timeline = 0, lastNow = 0, stress = false;
+
+  function buildState(reg) {
+    const P = SIM.phys, RE = P.RE;
+    const st = {
+      regime: reg, tech: 'ibs',
+      scenario: reg === 'LEO'
+        ? { id: 'sl8-980', name: 'SL-8 cluster', cluster: { alt: 980, inc: 83.0, count: 30, name: 'SL-8 cluster' } }
+        : { id: 'geo-belt', name: 'GEO belt', cluster: { alt: P.GEO_R - RE, inc: 3.0, count: 12, name: 'GEO belt' }, graveyardDh: 300, driftDh: 100 },
+      t: 0, dt: 0, earthRot: 0.4, phase: 'prelaunch', phaseT: 0, phaseDur: 1, warp: warp, events: [],
+      launch: { site: SITES[reg], path: [] },
+      shepherd: {
+        el: reg === 'LEO' ? { a: RE + 780, e: 0.0012, i: 83.0 * D, raan: 0.5, argp: 0.3, M: 0.2 }
+                          : { a: P.GEO_R - 100, e: 0.0002, i: 0.05 * D, raan: 0.0, argp: 0.0, M: 1.0 },
+        pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 },
+        dryMass: 900, prop: 260, propCap: 300, kits: 4, kitsCap: 6, dvUsed: 0, dvSavedByWaiting: 0, targetsDone: 0, mode: 'launch'
+      },
+      targets: [], current: -1,
+      prox: { active: false, sep: 20, shepPos: { x: -20, y: 0, z: 0 }, beamOn: false, counterOn: false, beamHalfAngleDeg: 12, standoff: 15, tumble: 1, arm: 0, kitAttached: false, kitBurn: false, targetKind: 'rocketbody', targetLength: 6.5, targetDiam: 2.4 }
+    };
+    const N = reg === 'LEO' ? 30 : 12;
+    for (let k = 0; k < N; k++) {
+      const kind = reg === 'LEO' ? ['rocketbody', 'comsat', 'smallsat'][k % 3] : 'comsat';
+      const mass = kind === 'rocketbody' ? 1400 + 40 * (k % 5) : kind === 'comsat' ? 2200 + 100 * (k % 4) : 160;
+      const el = reg === 'LEO'
+        ? { a: RE + 980 + (k % 4) * 3, e: 0.002 + 0.001 * (k % 3), i: (83.0 + 0.15 * ((k % 5) - 2)) * D, raan: k / N * 2 * Math.PI, argp: k * 0.7, M: k * 1.9 }
+        : { a: P.GEO_R + (k % 3) * 4 - 4, e: 0.0003, i: (k % 6) * 1.3 * D, raan: k * 0.9, argp: 0, M: k / N * 2 * Math.PI };
+      st.targets.push({
+        id: 'T' + k, name: (kind === 'rocketbody' ? 'SL-8 R/B ' : kind === 'comsat' ? 'Raduga ' : 'cubesat ') + (k + 1), mass, kind,
+        length: kind === 'rocketbody' ? 6.5 : 2.6, diam: kind === 'rocketbody' ? 2.4 : 2.2,
+        el, pos: P.posFromEl(el), casualtyRisk: 3e-5, burnable: true, eligible: true, status: 'idle', tumble: 1.2,
+        perigeeAlt: el.a * (1 - el.e) - RE, apogeeAlt: el.a * (1 + el.e) - RE, lifetimeDays: null, reentry: null, kit: null,
+        _a0: el.a, _sc: 0
+      });
+    }
+    return st;
+  }
+
+  // real-time phase script (seconds)
+  const SCRIPT = [
+    ['prelaunch', 1.5], ['ascent', 6], ['parking', 2], ['transfer', 2], ['insert', 1.5],
+    ['wait', 9], ['climb', 3], ['rendezvous', 3], ['characterize', 2], ['standoff', 2], ['push', 6], ['release', 2],
+    ['return', 3], ['wait', 8], ['climb', 3], ['approach', 3], ['attach', 3], ['depart', 3], ['return', 3], ['complete', 4]
+  ];
+  const SCRIPT_LEN = SCRIPT.reduce((s, p) => s + p[1], 0);
+  function phaseAt(tl) {
+    let t = tl % SCRIPT_LEN;
+    for (const [name, dur] of SCRIPT) { if (t < dur) return { name, u: t / dur, dur }; t -= dur; }
+    return { name: 'complete', u: 0, dur: 1 };
+  }
+  const smooth = u => u * u * (3 - 2 * u);
+
+  // Stress preset: sun-synchronous shepherd waiting on a decaying elliptical target; curves rebuild every frame.
+  function buildStress() {
+    const P = SIM.phys, RE = P.RE;
+    const st = buildState('LEO');
+    st.scenario = { id: 'sso-stress', name: 'SSO stress', cluster: { alt: 790, inc: 98.0, count: 4, name: 'SSO cluster' } };
+    st.shepherd.el = { a: RE + 590, e: 0.0008, i: 98.0 * D, raan: 1.2, argp: 0.1, M: 0.5 };
+    st.phase = 'wait'; st.phaseT = 0; st.phaseDur = Infinity; st.current = 0;
+    st.wait = { gapDeg: 37, eta: 1e7 };
+    st.targets.length = 4;
+    const t0 = st.targets[0];
+    const a0 = RE + (350 + 790) / 2;
+    t0.el = { a: a0, e: (790 - 350) / (2 * a0), i: 98.0 * D, raan: 1.2 + 37 * D, argp: 0.8, M: 0 }; t0._a0 = a0; t0.status = 'decaying'; t0.name = 'SSO R/B 1';
+    for (let k = 1; k < 4; k++) { st.targets[k].el.i = 98.0 * D; st.targets[k].el.a = RE + 790; st.targets[k]._a0 = RE + 790; }
+    // poisoned inputs: these must never hang or throw
+    st.targets[1].el.raan = Infinity; st.targets[1].status = 'idle'; st.targets[1].name = 'raan=Inf';
+    st.targets[2].el.a = NaN; st.targets[2].pos = { x: NaN, y: NaN, z: NaN }; st.targets[2].status = 'targeted'; st.targets[2].name = 'a=NaN';
+    st.targets[3].reentry = { lat: Infinity, lon: -Infinity, t: 0 }; st.targets[3].status = 'reentered'; st.targets[3].name = 'reentry=Inf';
+    return st;
+  }
+  function stepStress(realDt) {
+    const P = SIM.phys, RE = P.RE;
+    const simDt = realDt * warp;
+    state.t += simDt; state.dt = simDt;
+    state.earthRot = (state.earthRot + P.OMEGA_E * simDt) % (2 * Math.PI);
+    const sh = state.shepherd, n = P.meanMotion(sh.el.a);
+    sh.el.M = (sh.el.M + n * simDt) % (2 * Math.PI);
+    sh.el.raan += P.raanRate(sh.el.a, sh.el.e, sh.el.i) * simDt; // positive for i = 98°
+    sh.pos = P.posFromEl(sh.el);
+    const p2 = P.posFromEl({ a: sh.el.a, e: sh.el.e, i: sh.el.i, raan: sh.el.raan, argp: sh.el.argp, M: sh.el.M + 1e-4 });
+    const k = n / 1e-4;
+    sh.vel = { x: (p2.x - sh.pos.x) * k, y: (p2.y - sh.pos.y) * k, z: (p2.z - sh.pos.z) * k };
+    const t0 = state.targets[0];
+    t0.el.a -= 0.6;                                     // > 0.5 km per frame -> curve rebuild every frame
+    if (t0.el.a * (1 - t0.el.e) < RE + 200) t0.el.a = t0._a0;
+    t0.el.M = (t0.el.M + P.meanMotion(t0.el.a) * simDt) % (2 * Math.PI);
+    t0.el.raan += P.raanRate(t0.el.a, t0.el.e, t0.el.i) * simDt;
+    t0.perigeeAlt = t0.el.a * (1 - t0.el.e) - RE; t0.apogeeAlt = t0.el.a * (1 + t0.el.e) - RE;
+    t0.pos = P.posFromEl(t0.el);
+    for (let i = 1; i < state.targets.length; i++) { const t = state.targets[i]; if (i !== 2) t.pos = P.posFromEl(t.el); }
+  }
+
+  function step(realDt) {
+    if (stress) return stepStress(realDt);
+    const P = SIM.phys, RE = P.RE;
+    const simDt = realDt * warp;
+    state.t += simDt; state.dt = simDt; state.warp = warp;
+    state.earthRot = (state.earthRot + P.OMEGA_E * simDt) % (2 * Math.PI);
+    timeline += realDt;
+    const ph = phaseAt(timeline);
+    const prevPhase = state.phase;
+    state.phase = ph.name; state.phaseT = ph.u * ph.dur; state.phaseDur = ph.dur;
+    const cycle = Math.floor(timeline / SCRIPT_LEN);
+
+    // launch path
+    const inLaunch = ['prelaunch', 'ascent', 'parking', 'transfer', 'insert'].includes(ph.name);
+    if (inLaunch) {
+      const site = state.launch.site;
+      if (ph.name === 'prelaunch') state.launch.path.length = 0;
+      else {
+        // 0..1 over ascent..insert
+        const order = ['ascent', 'parking', 'transfer', 'insert'];
+        const idx = order.indexOf(ph.name);
+        const s = Math.min(1, (idx + ph.u) / order.length);
+        const altTarget = state.regime === 'LEO' ? 780 : 250;
+        const alt = altTarget * smooth(Math.min(1, s * 1.6));
+        const dlon = s * (state.regime === 'LEO' ? 110 : 60) * D, dlat = s * (state.regime === 'LEO' ? -18 : 6) * D;
+        const p = P.latLonToEci(site.lat + dlat, site.lon + dlon, alt, state.earthRot);
+        state.launch.path.push(p);
+        if (state.launch.path.length > 3000) state.launch.path.shift();
+      }
+      state.shepherd.mode = 'launch';
+    }
+
+    // shepherd propagation
+    const sh = state.shepherd, n = P.meanMotion(sh.el.a);
+    sh.el.M = (sh.el.M + n * simDt) % (2 * Math.PI);
+    sh.el.raan += P.raanRate(sh.el.a, sh.el.e, sh.el.i) * simDt;
+    sh.pos = P.posFromEl(sh.el);
+    const p2 = P.posFromEl({ a: sh.el.a, e: sh.el.e, i: sh.el.i, raan: sh.el.raan, argp: sh.el.argp, M: sh.el.M + 1e-4 });
+    const k = n / 1e-4;
+    sh.vel = { x: (p2.x - sh.pos.x) * k, y: (p2.y - sh.pos.y) * k, z: (p2.z - sh.pos.z) * k };
+    sh.mode = inLaunch ? 'launch' : ph.name === 'wait' ? 'wait' : ph.name === 'push' ? 'push' : ph.name === 'return' ? 'return' : ph.name === 'complete' ? 'done' : 'transfer';
+
+    // current target & prox
+    const N = state.targets.length;
+    state.current = inLaunch || ph.name === 'complete' ? -1 : (cycle * 2 + (timeline % SCRIPT_LEN > 40 ? 1 : 0)) % N;
+    const proxPhases = ['rendezvous', 'characterize', 'standoff', 'push', 'release', 'approach', 'attach', 'depart'];
+    state.prox.active = proxPhases.includes(ph.name);
+    state.prox.beamOn = ph.name === 'push';
+    state.prox.counterOn = ph.name === 'push';
+    state.prox.kitBurn = ph.name === 'depart';
+    state.prox.kitAttached = ['attach', 'depart'].includes(ph.name);
+    state.prox.arm = ph.name === 'approach' ? ph.u : (ph.name === 'attach' ? 1 : 0);
+
+    // targets: propagate + cycle statuses every 3 s of real time
+    const slot = Math.floor(timeline / 3);
+    for (let i = 0; i < N; i++) {
+      const t = state.targets[i], nn = P.meanMotion(t.el.a);
+      t.el.M = (t.el.M + nn * simDt) % (2 * Math.PI);
+      t.el.raan += P.raanRate(t.el.a, t.el.e, t.el.i) * simDt;
+      let st = STATUSES[(i + slot) % STATUSES.length];
+      if (i === state.current) st = ph.name === 'push' ? 'pushing' : (ph.name === 'release' || ph.name === 'return') ? 'decaying' : (ph.name === 'depart' ? 'kitburn' : ph.name === 'attach' ? 'kitted' : 'targeted');
+      // one target every 9 s re-enters (alternating controlled/uncontrolled), stays reentered for 6 s
+      const reSlot = Math.floor(timeline / 9), reIdx = (reSlot * 7) % N;
+      if (i === reIdx && i !== state.current && (timeline % 9) > 3) {
+        if (t.status !== 'reentered') {
+          const controlled = reSlot % 2 === 0;
+          t.kit = controlled ? { mass: 40, dv: 120, burning: false } : null;
+          t.reentry = controlled ? { lat: (-48 + 5 * Math.sin(reSlot)) * D, lon: (-123 + 12 * Math.cos(reSlot)) * D, t: state.t }
+                                 : { lat: (30 * Math.sin(reSlot * 1.7)) * D, lon: (reSlot * 73 % 360 - 180) * D, t: state.t };
+        }
+        st = 'reentered';
+      }
+      if (st === 'decaying' || st === 'released') { t.el.a = Math.max(RE + 300, t.el.a - 2 * simDt / 60); t.el.e = 0.012; }
+      else if (st === 'graveyard') { t.el.a = state.regime === 'GEO' ? P.GEO_R + 300 : t._a0 + 60; t.el.e = 0.0005; }
+      else { t.el.a = t._a0; t.el.e = 0.002; }
+      if (st !== 'reentered' && st !== 'kitted' && st !== 'kitwait' && st !== 'kitburn') t.kit = null;
+      t.status = st;
+      t.perigeeAlt = t.el.a * (1 - t.el.e) - RE; t.apogeeAlt = t.el.a * (1 + t.el.e) - RE;
+      t.pos = P.posFromEl(t.el);
+    }
+    if (prevPhase !== state.phase) state.events.push({ t: state.t, text: 'phase ' + state.phase });
+    if (state.events.length > 40) state.events.shift();
+  }
+
+  // ---- UI
+  let fpsAcc = 0, fpsN = 0, fps = 0;
+  function start() {
+    state = buildState(regime);
+    const view = document.getElementById('view');
+    SIM.scene.init(view);
+    window.addEventListener('resize', () => SIM.scene.resize());
+    document.querySelectorAll('[data-cam]').forEach(b => b.addEventListener('click', () => {
+      document.querySelectorAll('[data-cam]').forEach(x => x.classList.toggle('on', x === b));
+      SIM.scene.setCameraMode(b.dataset.cam);
+    }));
+    const tog = (id, fn) => { const b = document.getElementById(id); b.addEventListener('click', () => { b.classList.toggle('on'); fn(b.classList.contains('on')); }); };
+    tog('labels', v => SIM.scene.setLabels(v));
+    tog('orbit', v => SIM.scene.setUserOrbit(v));
+    document.getElementById('regime').addEventListener('click', (e) => {
+      regime = regime === 'LEO' ? 'GEO' : 'LEO'; e.target.textContent = 'regime: ' + regime;
+      state = buildState(regime); timeline = 0;
+      SIM.scene.setCameraMode(document.querySelector('[data-cam].on').dataset.cam);
+    });
+    const WARPS = [1, 30, 120, 600, 3000];
+    document.getElementById('warp').addEventListener('click', (e) => { warp = WARPS[(WARPS.indexOf(warp) + 1) % WARPS.length]; e.target.textContent = 'warp ×' + warp; });
+    document.getElementById('pause').addEventListener('click', (e) => { paused = !paused; e.target.classList.toggle('on', paused); });
+    document.getElementById('stress').addEventListener('click', (e) => {
+      stress = !stress; e.target.classList.toggle('on', stress);
+      regime = 'LEO'; document.getElementById('regime').textContent = 'regime: LEO';
+      state = stress ? buildStress() : buildState(regime); timeline = 0;
+    });
+    window.__state = () => state; // for console inspection
+    lastNow = performance.now();
+    requestAnimationFrame(frame);
+  }
+  function frame(now) {
+    const realDt = Math.min(0.1, (now - lastNow) / 1000); lastNow = now;
+    if (!paused) step(realDt);
+    SIM.scene.update(state, realDt);
+    SIM.scene.render();
+    fpsAcc += realDt; fpsN++;
+    if (fpsAcc >= 0.5) { fps = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
+    const cur = state.current >= 0 ? state.targets[state.current] : null;
+    document.getElementById('info').textContent =
+      'phys: ' + (SIM.phys.__stub ? 'stub' : 'real') + '   fps ' + fps + '\n' +
+      'phase ' + state.phase + '  t=' + Math.round(state.t) + ' s  warp ×' + warp + '\n' +
+      'current: ' + (cur ? cur.name + ' [' + cur.status + ']' : '—') + '\n' +
+      'targets ' + state.targets.length + '  events ' + state.events.length;
+    requestAnimationFrame(frame);
+  }
+})();
+</script>
+</body>
+</html>

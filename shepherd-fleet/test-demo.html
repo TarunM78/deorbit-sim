@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo harness</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600&family=Fira+Code:wght@400;500&display=swap">
+<style>
+/* Standalone harness for js/demo.js. Mirrors app.js's sub-stepping and view switching; real mission state machine; no app.js. */
+:root{
+  --bg:#141c3c; --panel:#0f1631; --panel-2:#1b2450; --line:#2b3666;
+  --fg:#e9edf6; --muted:#9aa5c4; --accent:#22a690; --beam:#a9c4ea; --amber:#f2b955; --purple:#c792ff; --crit:#ff6f6f;
+  --body:"Fira Sans",ui-sans-serif,system-ui,sans-serif; --mono:"Fira Code",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#eef1f7; --panel:#ffffff; --panel-2:#f2f4fa; --line:#d0d6e6; --fg:#141c3c; --muted:#59648a; --accent:#178a77; --beam:#4a78c2; --amber:#b07a12; --purple:#7c4dcc; --crit:#c93c3c; color-scheme:light;}}
+:root[data-theme="light"]{
+  --bg:#eef1f7; --panel:#ffffff; --panel-2:#f2f4fa; --line:#d0d6e6; --fg:#141c3c; --muted:#59648a; --accent:#178a77; --beam:#4a78c2; --amber:#b07a12; --purple:#7c4dcc; --crit:#c93c3c; color-scheme:light;}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--body);font-size:13.5px;overflow:hidden;display:flex;flex-direction:column}
+#bar{height:40px;flex:0 0 40px;box-sizing:border-box;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);white-space:nowrap;overflow-x:auto;overflow-y:hidden}
+#bar .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-right:4px}
+button{font-family:var(--body);font-size:12.5px;font-weight:500;background:var(--panel-2);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:5px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)} button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent);color:#08110f;border-color:var(--accent)}
+#readout{font-family:var(--mono);font-size:12px;color:#c7cfe6;font-variant-numeric:tabular-nums;margin-left:6px}
+#readout b{color:#fff;font-weight:500}
+#status{font-family:var(--mono);font-size:12px;color:var(--accent);margin-left:auto;padding-left:12px}
+#status:empty{display:none}
+#view{position:relative;flex:1;min-height:0;background:#0b1128;overflow:hidden}
+#orbitBox,#proxBox,#fpvBox{position:absolute;inset:0}
+#orbitBox canvas,#proxBox canvas,#fpvBox canvas{display:block;width:100%;height:100%}
+#banner{position:absolute;left:12px;right:12px;top:12px;z-index:50;background:rgba(201,60,60,.92);color:#fff;font-family:var(--mono);font-size:13px;padding:10px 14px;border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,.4);pointer-events:none}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="bar">
+  <span class="eyebrow">Demo harness</span>
+  <button class="primary" id="start">Start demo</button>
+  <span id="readout">—</span>
+  <span id="status"></span>
+</div>
+<div id="view">
+  <div id="orbitBox"></div>
+  <div id="proxBox" class="hidden"></div>
+  <div id="fpvBox" class="hidden"></div>
+  <div id="banner" class="hidden"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+<script src="js/physics.js"></script>
+<script src="js/scenarios.js"></script>
+<script src="js/mission.js"></script>
+<script src="js/scene.js"></script>
+<script src="js/prox.js"></script>
+<script src="js/fpv-hud.js"></script>
+<script src="js/fpv.js"></script>
+<script src="js/demo.js"></script>
+<script>
+(function(){
+'use strict';
+const $=id=>document.getElementById(id);
+const M=SIM.mission, P=SIM.phys, DAY=P.DAY;
+const view=$('view'), boxes={orbit:$('orbitBox'), prox:$('proxBox'), fpv:$('fpvBox')}, banner=$('banner');
+let running=false, demoMode=false, camMode='', curView='', last=performance.now(), fixedDt=0;
+let startWall=0, endWall=0, endCardAt=-1, beatLog=[], lastSig='', demoElapsed=0;
+const errs=[];
+function showBanner(msg){ banner.textContent=msg; banner.classList.remove('hidden'); console.error('[test-demo] '+msg); }
+function guard(label,fn){ try{ return fn(); }catch(e){ if(!errs.includes(label)){ errs.push(label); showBanner(label+' threw: '+(e&&e.message||e)+' (see console)'); console.error('[test-demo] '+label, e); } } }
+
+// ---------- modules ----------
+const mods={};
+mods.orbit=SIM.scene; mods.prox=SIM.prox; mods.fpv=SIM.fpv||null;
+guard('scene.init',()=>SIM.scene.init(boxes.orbit));
+guard('prox.init',()=>SIM.prox.init(boxes.prox));
+if(mods.fpv){ guard('fpv.init',()=>SIM.fpv.init(boxes.fpv)); } else { console.warn('[test-demo] SIM.fpv missing: using the orbit view for beats 0-1'); }
+guard('scene.setUserOrbit',()=>SIM.scene.setUserOrbit(true)); guard('prox.setUserOrbit',()=>SIM.prox.setUserOrbit(true));
+SIM.demo.debug=true;
+SIM.demo.init(view);
+
+// ---------- view switching (mirrors app.js) ----------
+function showView(v){
+  if(v==='fpv'&&!mods.fpv) v='orbit';
+  if(v!==curView){ curView=v; for(const k in boxes){ boxes[k].classList.toggle('hidden',k!==v); const m=mods[k]; if(m) guard(k+'.setVisible',()=>m.setVisible(k===v)); } }
+  return v;
+}
+function setCam(c){ if(c!==camMode){ camMode=c; guard('scene.setCameraMode',()=>SIM.scene.setCameraMode(c)); } }
+
+// ---------- demo control ----------
+function startDemo(){
+  M.setup('leo-sso','ibs'); demoMode=true; running=true; startWall=performance.now(); endWall=0; endCardAt=-1; beatLog=[]; lastSig=''; demoElapsed=0; $('status').textContent='';
+  camMode=''; setCam('follow');
+  SIM.demo.start({ onReplay, onExplore });
+  console.log('[test-demo] demo started');
+}
+function onReplay(){ console.log('[test-demo] replay'); startDemo(); }
+function onExplore(){ console.log('[test-demo] explore'); demoMode=false; running=true; $('status').textContent='exploring (warp = state warp)'; }
+$('start').onclick=e=>{ startDemo(); e.currentTarget.blur(); };
+
+// ---------- readout ----------
+function fmtMET(t){ const d=Math.floor(t/DAY),h=Math.floor((t%DAY)/3600),m=Math.floor((t%3600)/60); return d>=365? `T+${(d/365).toFixed(2)} yr` : `T+${d}d ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`; }
+function fmtWarp(w){ if(w<60) return w.toFixed(0)+' s/s'; if(w<3600) return (w/60).toFixed(0)+' min/s'; if(w<DAY) return (w/3600).toFixed(1)+' h/s'; return (w/DAY).toFixed(w<10*DAY?1:0)+' d/s'; }
+let lastRead='';
+function updateReadout(S,warp,v,d){
+  const wall=demoElapsed;
+  const txt=`<b>${S.phase}</b> · ${fmtMET(S.t)} · warp <b>${fmtWarp(warp)}</b> · view <b>${v}</b>`+(startWall?` · ${demoMode?'demo':'free'} <b>${wall.toFixed(1)} s</b>`:'')+(endCardAt>=0?` · end card at <b>${endCardAt.toFixed(1)} s</b>`:'');
+  if(txt!==lastRead){ lastRead=txt; $('readout').innerHTML=txt; }
+}
+
+// ---------- loop ----------
+function resize(){ guard('scene.resize',()=>SIM.scene.resize()); guard('prox.resize',()=>SIM.prox.resize()); if(mods.fpv) guard('fpv.resize',()=>SIM.fpv.resize()); }
+window.addEventListener('resize',resize);
+function frame(now){
+  requestAnimationFrame(frame);
+  const real=fixedDt||Math.min(0.1,(now-last)/1000); last=now;
+  if(document.hidden&&!fixedDt) return;   // RAF is throttled in a background tab; don't let a stale frame advance the sim
+  stepFrame(real);
+}
+function stepFrame(real){
+  const S=M.state; if(!S) return;
+  let warp=S.warp, v=S.prox.active?'prox':'orbit', paused=!running, d=null;
+  if(demoMode&&SIM.demo.active){
+    d=SIM.demo.tick(S,real); demoElapsed+=real;
+    warp=d.warp; paused=paused||!!d.paused; v=d.view; setCam(d.cam);
+    const cap=view.querySelector('.demo-cap'); const sig=d.view+'|'+(cap&&cap.style.display!=='none'?cap.textContent:'')+'|'+(d.paused?'end':'');
+    if(sig!==lastSig){ lastSig=sig; beatLog.push({demoT:+demoElapsed.toFixed(2), wall:+((performance.now()-startWall)/1000).toFixed(2), phase:S.phase, view:d.view, cam:d.cam, warp:Math.round(warp), caption:sig.split('|')[1].slice(0,40), end:!!d.paused}); }
+    if(d.paused&&endCardAt<0){ endWall=performance.now(); endCardAt=(endWall-startWall)/1000; console.log('[test-demo] end card after', endCardAt.toFixed(2), 's wall clock,', demoElapsed.toFixed(2), 's of frame time'); }
+  } else if(demoMode){ demoMode=false; }
+  if(!paused){
+    let dt=real*warp; const maxSub= S.prox.active? 0.25*DAY : (S.phase==='wait'||S.phase==='complete'? 0.5*DAY : 120);
+    const n=Math.max(1,Math.min(400,Math.ceil(dt/maxSub)));
+    for(let k=0;k<n;k++) guard('mission.step',()=>M.step(dt/n));
+  }
+  v=showView(v);
+  const m=mods[v]; if(m){ guard(v+'.update',()=>m.update(S,real)); guard(v+'.render',()=>m.render()); }
+  updateReadout(S,warp,v);
+  return d;
+}
+// QA hook: drive the loop deterministically with a fixed frame time (e.g. step(1/60, 600) = 10 s of demo time).
+// Returns the last directive and the demo's own elapsed label so timings can be checked without depending on RAF.
+window.demoHarness={
+  start:startDemo,
+  step(real,n){ n=n||1; let d=null; for(let k=0;k<n;k++){ d=stepFrame(real); if(d&&d.paused) break; } last=performance.now(); return {dir:d, phase:M.state.phase, t:M.state.t, endCardAt, beatLog}; },
+  get state(){ return M.state; },
+};
+M.setup('leo-sso','ibs'); running=false; showView('orbit'); setCam('earth'); resize(); requestAnimationFrame(frame);
+// ?autostart=1 starts the demo on load (headless / automated QA); ?fixed=1 also steps with a fixed 1/60 s frame time.
+const qs=new URLSearchParams(location.search); if(qs.get('fixed')==='1') fixedDt=1/60;
+if(qs.get('autostart')==='1') setTimeout(startDemo,300);
+})();
+</script>
+</body>
+</html>

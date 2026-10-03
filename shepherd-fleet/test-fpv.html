@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FPV harness</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600&family=Fira+Code:wght@400;500&display=swap">
+<style>
+/* Standalone harness for js/fpv.js + js/fpv-hud.js. Real mission state machine, own RAF loop, no app.js. */
+:root{
+  --bg:#141c3c; --panel:#0f1631; --panel-2:#1b2450; --line:#2b3666;
+  --fg:#e9edf6; --muted:#9aa5c4; --accent:#22a690; --beam:#a9c4ea; --amber:#f2b955; --purple:#c792ff; --crit:#ff6f6f;
+  --body:"Fira Sans",ui-sans-serif,system-ui,sans-serif; --mono:"Fira Code",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#eef1f7; --panel:#ffffff; --panel-2:#f2f4fa; --line:#d0d6e6; --fg:#141c3c; --muted:#59648a; --accent:#178a77; --beam:#4a78c2; --amber:#b07a12; --purple:#7c4dcc; --crit:#c93c3c; color-scheme:light;}}
+:root[data-theme="light"]{
+  --bg:#eef1f7; --panel:#ffffff; --panel-2:#f2f4fa; --line:#d0d6e6; --fg:#141c3c; --muted:#59648a; --accent:#178a77; --beam:#4a78c2; --amber:#b07a12; --purple:#7c4dcc; --crit:#c93c3c; color-scheme:light;}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--body);font-size:13.5px;overflow:hidden;display:flex;flex-direction:column}
+#bar{height:48px;flex:0 0 48px;box-sizing:border-box;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);white-space:nowrap;overflow-x:auto;overflow-y:hidden}
+#bar .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-right:4px}
+button,select{font-family:var(--body);font-size:12.5px;font-weight:500;background:var(--panel-2);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:6px 10px;cursor:pointer}
+button:hover,select:hover{border-color:var(--accent)} button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent);color:#08110f;border-color:var(--accent)}
+select{max-width:260px}
+label.warp{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+label.warp input[type=range]{width:110px;accent-color:var(--accent);margin:0}
+label.warp output{font-family:var(--mono);color:var(--fg);font-variant-numeric:tabular-nums;min-width:5ch;text-align:right}
+#readout{font-family:var(--mono);font-size:12px;color:#c7cfe6;font-variant-numeric:tabular-nums;margin-left:6px}
+#readout b{color:#fff;font-weight:500}
+#status{font-family:var(--mono);font-size:12px;color:var(--accent);margin-left:auto;padding-left:12px}
+#status:empty{display:none}
+#fpvBox{position:relative;flex:1;min-height:0;background:#0b1128;overflow:hidden}
+#fpvBox canvas{display:block}
+#banner{position:absolute;left:12px;right:12px;top:12px;z-index:10;background:rgba(201,60,60,.92);color:#fff;font-family:var(--mono);font-size:13px;padding:10px 14px;border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,.4)}
+.hidden{display:none!important}
+kbd{font-family:var(--mono);font-size:10.5px;color:var(--muted);border:1px solid var(--line);border-radius:3px;padding:0 4px;margin-left:2px}
+</style>
+</head>
+<body>
+<div id="bar">
+  <span class="eyebrow">FPV harness</span>
+  <select id="scenario" title="Scenario"></select>
+  <button class="primary" id="play" title="Play / pause (space)">Pause</button>
+  <button id="skip" title="Skip phase (N)">Skip phase<kbd>N</kbd></button>
+  <button id="restart" title="Restart (R)">Restart<kbd>R</kbd></button>
+  <label class="warp" title="Warp multiplier applied on top of the phase warp"><span>warp ×</span><input type="range" id="mult" min="-1" max="0.60206" step="0.01" value="0"><output id="o_mult">1.00×</output></label>
+  <span id="readout">—</span>
+  <span id="status"></span>
+</div>
+<div id="fpvBox"><div id="banner" class="hidden"></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+<script src="js/physics.js"></script>
+<script src="js/scenarios.js"></script>
+<script src="js/mission.js"></script>
+<script src="js/fpv-hud.js"></script>
+<script src="js/fpv.js"></script>
+<script>
+(function(){
+'use strict';
+const $=id=>document.getElementById(id);
+const M=SIM.mission;
+const box=$('fpvBox'), banner=$('banner');
+let running=true, mult=1, complete=false, fpvOk=false, last=performance.now();
+
+function showBanner(msg){ banner.textContent=msg; banner.classList.remove('hidden'); }
+
+// ---------- scenario select ----------
+const sel=$('scenario');
+for(const s of SIM.scenarios){ const o=document.createElement('option'); o.value=s.id; o.textContent=`${s.name} · ${s.launch.name}`; sel.appendChild(o); }
+sel.value='leo-sso';
+
+// ---------- fpv guard ----------
+if(!window.SIM.fpv){ showBanner('js/fpv.js not loaded'); }
+else {
+  try { SIM.fpv.init(box); fpvOk=true; }
+  catch(e){ showBanner('SIM.fpv.init threw: '+(e&&e.message||e)); console.error('[test-fpv] SIM.fpv.init failed', e); }
+}
+if(fpvOk && typeof SIM.fpv.isJourneyPhase!=='function'){ showBanner('SIM.fpv.isJourneyPhase missing'); fpvOk=false; }
+function journey(phase){ return fpvOk? !!SIM.fpv.isJourneyPhase(phase) : ['prelaunch','ascent','parking','transfer','insert'].includes(phase); }
+
+// ---------- controls ----------
+function restart(){
+  M.setup(sel.value,'ibs'); running=true; complete=false; $('play').textContent='Pause'; $('status').textContent=''; last=performance.now();
+  if(fpvOk){ try{ SIM.fpv.setVisible(true); }catch(e){ console.error('[test-fpv] setVisible failed', e); } }
+}
+function togglePlay(){ if(complete) return; running=!running; $('play').textContent=running?'Pause':'Play'; }
+function skip(){ if(M.state && !complete) M.skipPhase(); }
+$('play').onclick=e=>{ togglePlay(); e.currentTarget.blur(); };
+$('skip').onclick=e=>{ skip(); e.currentTarget.blur(); };
+$('restart').onclick=e=>{ restart(); e.currentTarget.blur(); };
+sel.addEventListener('change',()=>{ restart(); sel.blur(); });
+const multEl=$('mult');
+function readMult(){ mult=Math.pow(10,parseFloat(multEl.value)); $('o_mult').textContent=mult.toFixed(2)+'×'; }
+multEl.addEventListener('input',readMult); readMult();
+window.addEventListener('keydown',e=>{
+  const t=e.target, tag=t&&t.tagName; if(tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA') return;
+  if(e.code==='Space'){ e.preventDefault(); togglePlay(); }
+  else if(e.key==='n'||e.key==='N'){ skip(); }
+  else if(e.key==='r'||e.key==='R'){ restart(); }
+});
+
+// ---------- readout ----------
+function fmtT(t){ const neg=t<0; t=Math.abs(t); const h=Math.floor(t/3600), m=Math.floor((t%3600)/60), s=Math.floor(t%60);
+  const mmss=String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); return (neg?'T− ':'T+ ')+(h>0? h+':'+mmss : mmss); }
+let lastRead='';
+function updateReadout(S){
+  const tPlus=S.t-20; const w=S.warp*mult;
+  const txt=`<b>${S.phase}</b> · ${fmtT(tPlus)} · warp <b>${w>=100?w.toFixed(0):w.toFixed(1)}×</b>`;
+  if(txt!==lastRead){ lastRead=txt; $('readout').innerHTML=txt; }
+}
+
+// ---------- loop ----------
+function resize(){ if(fpvOk){ try{ SIM.fpv.resize(); }catch(e){ console.error('[test-fpv] resize failed', e); } } }
+window.addEventListener('resize',resize);
+function frame(now){
+  requestAnimationFrame(frame);
+  const real=Math.min(0.1,(now-last)/1000); last=now;
+  const S=M.state; if(!S) return;
+  if(!complete && !journey(S.phase)){ complete=true; running=false; $('status').textContent='journey complete'; $('play').textContent='Play'; }
+  if(running && !complete){
+    const warp=S.warp*mult; const dt=real*warp; const maxSub=120;
+    const n=Math.max(1,Math.min(400,Math.ceil(dt/maxSub)));
+    for(let k=0;k<n;k++) M.step(dt/n);
+    if(!journey(S.phase)){ complete=true; running=false; $('status').textContent='journey complete'; $('play').textContent='Play'; }
+  }
+  if(fpvOk){ SIM.fpv.update(S,real); SIM.fpv.render(); }
+  updateReadout(S);
+}
+restart(); resize(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

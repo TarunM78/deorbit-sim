@@ -1,0 +1,444 @@
+<meta charset="utf-8">
+<title>Deorbit GEO Shepherd</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600&family=Fira+Code:wght@400;500&display=swap">
+<style>
+/* Layout: full-bleed 3D viewport, mission-control rail on the left, telemetry strip below.
+   Palette follows the Deorbit deck: navy ground, teal accent, pale-blue ion beam. Dark-first. */
+:root{
+  --bg:#141c3c; --panel:#0f1631; --panel-2:#1b2450; --line:#2b3666;
+  --fg:#e9edf6; --muted:#9aa5c4; --accent:#22a690; --beam:#a9c4ea; --counter:#3ecfb5;
+  --good:#3ecfb5; --warn:#f2b955; --crit:#ff6f6f;
+  --body:"Fira Sans",ui-sans-serif,system-ui,sans-serif;
+  --mono:"Fira Code",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#eef1f7; --panel:#ffffff; --panel-2:#f2f4fa; --line:#d0d6e6;
+  --fg:#141c3c; --muted:#59648a; --accent:#178a77; --beam:#4a78c2; --counter:#178a77;
+  --good:#178a77; --warn:#b07a12; --crit:#c93c3c; color-scheme:light;}}
+:root[data-theme="light"]{
+  --bg:#eef1f7; --panel:#ffffff; --panel-2:#f2f4fa; --line:#d0d6e6;
+  --fg:#141c3c; --muted:#59648a; --accent:#178a77; --beam:#4a78c2; --counter:#178a77;
+  --good:#178a77; --warn:#b07a12; --crit:#c93c3c; color-scheme:light;}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--body);font-size:14px;overflow:hidden}
+#app{display:grid;grid-template-columns:330px 1fr;grid-template-rows:1fr auto;height:100%}
+#rail{grid-row:1/3;background:var(--panel);border-right:1px solid var(--line);padding:16px;display:flex;flex-direction:column;gap:14px;overflow-y:auto;min-width:0}
+#view{position:relative;min-width:0;min-height:0;background:#0b1128}
+#view canvas{display:block;width:100%;height:100%}
+#strip{background:var(--panel);border-top:1px solid var(--line);padding:10px 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px 18px;font-family:var(--mono);font-size:12px}
+h1{font-weight:600;font-size:26px;margin:0;line-height:1.05;text-wrap:balance}
+.rule{width:44px;height:3px;background:var(--accent);margin:8px 0 6px}
+.sub{color:var(--muted);font-size:12.5px;line-height:1.4}
+.eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.card{background:var(--panel-2);border:1px solid var(--line);border-radius:6px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.phases{display:flex;flex-direction:column;gap:3px}
+.phase{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:5px 8px;border-radius:4px;font-size:12.5px;color:var(--muted)}
+.phase .n{width:16px;height:16px;border-radius:50%;background:var(--line);color:var(--fg);font-family:var(--mono);font-size:10px;display:grid;place-items:center}
+.phase.active{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--fg)}
+.phase.active .n{background:var(--accent);color:#08110f}
+.phase.done{color:var(--fg)} .phase.done .n{background:var(--fg);color:var(--panel)}
+.phase .t{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums}
+label.row{display:grid;grid-template-columns:1fr auto;gap:8px;font-size:12px;color:var(--muted);align-items:center}
+label.row output{font-family:var(--mono);color:var(--fg);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--accent);margin:0 0 4px}
+.btns{display:flex;gap:6px;flex-wrap:wrap}
+button{font-family:var(--body);font-size:12.5px;font-weight:500;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:7px 11px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent);color:#08110f;border-color:var(--accent)}
+button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.kv{display:flex;flex-direction:column;gap:2px;min-width:0}
+.kv .k{color:var(--muted);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase}
+.kv .v{font-size:14px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.kv .v.good{color:var(--good)} .kv .v.warn{color:var(--warn)}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);width:0}
+#hud{position:absolute;top:12px;left:12px;font-family:var(--mono);font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:4px;pointer-events:none}
+#hud b{color:#e9edf6;font-weight:500}
+#legend{position:absolute;right:12px;top:12px;font-family:var(--mono);font-size:11px;color:#c7cfe6;display:flex;flex-direction:column;gap:4px;background:rgba(11,17,40,.75);padding:8px 10px;border-radius:4px;border:1px solid #2b3666}
+#legend span{display:flex;align-items:center;gap:6px}
+#legend i{width:12px;height:3px;border-radius:2px;display:inline-block}
+#callout{position:absolute;left:12px;bottom:12px;max-width:min(520px,calc(100% - 24px));font-size:12.5px;line-height:1.45;color:#e9edf6;background:rgba(11,17,40,.8);border-left:3px solid var(--accent);padding:8px 12px;border-radius:0 4px 4px 0}
+#notes{font-size:12px;color:var(--muted);line-height:1.5}
+#notes b{color:var(--fg);font-weight:500}
+@media (max-width:820px){
+  #app{grid-template-columns:1fr;grid-template-rows:auto minmax(300px,1fr) auto}
+  #rail{grid-row:auto;border-right:0;border-bottom:1px solid var(--line);max-height:40vh}
+  body{overflow:auto}
+}
+</style>
+
+<div id="app">
+  <aside id="rail">
+    <div>
+      <div class="eyebrow">Deorbit · Mission C · GEO graveyard</div>
+      <h1>Ion beam shepherd</h1>
+      <div class="rule"></div>
+      <div class="sub">Contactless push of a derelict GEO satellite to the IADC disposal orbit, then a cheap sub‑GEO drift to the next target in the same inclination cluster.</div>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">Operations sequence</div>
+      <div class="phases" id="phases"></div>
+      <div class="btns">
+        <button class="primary" id="play">Pause</button>
+        <button id="skip">Skip phase</button>
+        <button id="reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">Target &amp; shepherd</div>
+      <label class="row"><span>Target mass m<sub>t</sub></span> <output id="o_mt">3000 kg</output></label>
+      <input type="range" id="mt" min="500" max="8000" step="100" value="3000">
+      <label class="row"><span>Beam thrust F<sub>beam</sub></span> <output id="o_fb">40 mN</output></label>
+      <input type="range" id="fb" min="10" max="200" step="5" value="40">
+      <label class="row"><span>Beam capture η<sub>B</sub></span> <output id="o_eta">0.80</output></label>
+      <input type="range" id="eta" min="0.4" max="1" step="0.05" value="0.8">
+      <label class="row"><span>Beam half‑angle</span> <output id="o_div">15°</output></label>
+      <input type="range" id="div" min="8" max="45" step="1" value="15">
+      <label class="row"><span>Standoff</span> <output id="o_so">15 m</output></label>
+      <input type="range" id="so" min="5" max="40" step="1" value="15">
+      <label class="row"><span>Target A/m, C<sub>R</sub>=1.3</span> <output id="o_am">0.020 m²/kg</output></label>
+      <input type="range" id="am" min="0.005" max="0.08" step="0.005" value="0.02">
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">Time &amp; camera</div>
+      <label class="row"><span>Sim rate</span> <output id="o_rate">1 day / s</output></label>
+      <input type="range" id="rate" min="-1" max="1.5" step="0.05" value="0">
+      <div class="btns">
+        <button id="cam_auto" aria-pressed="true">Auto</button>
+        <button id="cam_prox" aria-pressed="false">Proximity</button>
+        <button id="cam_orbit" aria-pressed="false">Orbit</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">Propellant · Isp 1500 s · shepherd 500 kg</div>
+      <div class="bar"><i id="propbar"></i></div>
+      <label class="row"><span>Used on this target</span> <output id="o_prop">0.0 kg</output></label>
+      <label class="row"><span>Budget per target</span> <output id="o_propneed">— kg</output></label>
+    </div>
+
+    <div id="notes">
+      <b>How to read it.</b> The pale‑blue cone is the ion beam hitting the derelict, the teal cone is the counter thruster holding standoff. Force on target is η<sub>B</sub>F<sub>beam</sub>, and the counter thruster carries F<sub>beam</sub> + m<sub>s</sub>a so the shepherd follows. In orbit view, radial offsets are exaggerated ×30 so a 300 km raise is visible next to a 42 164 km orbit.
+    </div>
+  </aside>
+
+  <div id="view">
+    <div id="hud">
+      <span>MET <b id="h_met">T+0 d 00:00</b></span>
+      <span>Phase <b id="h_phase">—</b></span>
+      <span>Camera <b id="h_cam">—</b></span>
+      <span>Range <b id="h_range">—</b></span>
+    </div>
+    <div id="legend">
+      <span><i style="background:#a9c4ea"></i>Ion beam on target</span>
+      <span><i style="background:#3ecfb5"></i>Counter thruster</span>
+      <span><i style="background:#8b95b5"></i>GEO, 35 786 km, equatorial</span>
+      <span><i style="background:#f2b955"></i>Derelict cluster, i = 7.4°</span>
+      <span><i style="background:#3ecfb5;border-top:1px dashed #3ecfb5;height:0"></i>Graveyard, GEO + Δh</span>
+    </div>
+    <div id="callout"><span id="callout_t"></span></div>
+  </div>
+
+  <div id="strip">
+    <div class="kv"><span class="k">Target altitude</span><span class="v" id="s_alt">35 786.0 km</span></div>
+    <div class="kv"><span class="k">Raise so far</span><span class="v" id="s_dh">0.0 km</span></div>
+    <div class="kv"><span class="k">IADC raise</span><span class="v" id="s_req">— km</span></div>
+    <div class="kv"><span class="k">Δv delivered</span><span class="v" id="s_dv">0.00 m/s</span></div>
+    <div class="kv"><span class="k">Δv required</span><span class="v" id="s_dvreq">— m/s</span></div>
+    <div class="kv"><span class="k">Target accel</span><span class="v" id="s_acc">— µm/s²</span></div>
+    <div class="kv"><span class="k">Counter thrust</span><span class="v" id="s_fc">— mN</span></div>
+    <div class="kv"><span class="k">Beam‑on time</span><span class="v" id="s_dur">— d</span></div>
+    <div class="kv"><span class="k">Tumble rate</span><span class="v" id="s_tum">— °/s</span></div>
+    <div class="kv"><span class="k">Shepherd drift</span><span class="v" id="s_drift">0.00 °/day</span></div>
+    <div class="kv"><span class="k">Targets cleared</span><span class="v" id="s_n">0</span></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+<script>
+(function(){
+'use strict';
+// ---------- constants ----------
+const MU=3.986004418e14, RE=6378.137e3, R_GEO=42164.17e3, V_GEO=Math.sqrt(MU/R_GEO);
+const N_GEO=Math.sqrt(MU/Math.pow(R_GEO,3));
+const DAY=86400, ISP=1500, G0=9.80665, M_SHEP=500, INC=7.4*Math.PI/180; // cluster inclination (Laplace-plane tilt)
+const DRIFT_ALT=100e3; // shepherd parks 100 km below GEO
+const P={mt:3000,fb:0.040,eta:0.8,div:15,so:15,am:0.02,rate:0};
+const $=id=>document.getElementById(id);
+
+function sizing(){
+  const dh_req=(235+1000*1.3*P.am)*1e3;            // IADC: 235 km + 1000·CR·A/m  [km]
+  const dv_req=V_GEO*dh_req/(2*R_GEO);              // Δv ≈ v·Δa/(2a)
+  const acc=P.eta*P.fb/P.mt;                        // a = ηB·Fbeam/mt
+  const f_counter=P.fb+M_SHEP*acc;                  // Fcounter = Fbeam + ms·a
+  const t_push=dv_req/acc;                          // continuous beam-on time [s]
+  const ve=ISP*G0;
+  const m_push=(2*P.mt/P.eta+M_SHEP)*dv_req/ve;     // mprop ≈ (2mt/ηB + ms)·Δv/ve
+  const m_drift=M_SHEP*(2*3.6)/ve;                  // 100 km down and back up, ~3.6 m/s each
+  const drift_rate=1.5*N_GEO*DRIFT_ALT/R_GEO;       // rad/s eastward relative to GEO frame (~1.28°/day)
+  return {dh_req,dv_req,acc,f_counter,t_push,m_push,m_drift,drift_rate};
+}
+
+// ---------- mission ----------
+const PHASES=[
+  ['drift','Drift','Sub‑GEO drift to next target, ~1.3°/day'],
+  ['climb','Climb','Raise 100 km to GEO, ~3.6 m/s'],
+  ['rdv','Rendezvous','Ground track to onboard nav'],
+  ['char','Characterize','Tumble, CoM, appendages at 100 m'],
+  ['close','Standoff','Close to a few diameters'],
+  ['push','Push','Beam prograde, counter thruster on'],
+  ['verify','Verify','Back off, confirm by tracking'],
+];
+const CALLOUT={
+  drift:'Sitting 100 km below GEO the shepherd gains ~1.3° of longitude per day for ~3.6 m/s. Half the belt is reachable in ~140 days without touching inclination.',
+  climb:'A small prograde burn lifts the shepherd back to GEO and nulls the relative drift a few km short of the target.',
+  rdv:'Hand‑off from ground tracking, km‑level error, to angles‑only onboard navigation.',
+  char:'Hold at 100 m. Lidar and vision estimate tumble rate, centre of mass and the solar‑array envelope.',
+  close:'Close to standoff. Standoff is set by beam divergence: a wider plume forces a closer approach or a lower capture fraction.',
+  push:'Beam on. The plume impinges on the derelict and pushes it prograde; the counter thruster carries the recoil plus the shepherd\'s share of the acceleration. An off‑centre beam damps the tumble.',
+  verify:'Back off to 500 m and confirm the new orbit through SSA tracking, then drop 100 km and drift on.',
+};
+const S={t:0,phase:0,phaseT:0,running:true,cam:'auto',
+  targets:[],idx:0, r_t:R_GEO, lon_t:0, r_s:R_GEO-DRIFT_ALT, lon_s:0,
+  sep:0, dv:0, prop:0, cleared:0, beamOn:false, tumble:0.5, lonStart:0, lastSizing:null};
+function newTargets(){ // derelicts in the same inclination cluster, spread in longitude
+  return [0.0, 1.6, 3.3, 4.7].map(l=>({lon:l, r:R_GEO, done:false}));
+}
+function phaseDur(i){
+  const z=sizing();
+  switch(PHASES[i][0]){
+    case 'drift': { const tgt=S.targets[S.idx]; if(!tgt) return 30*DAY; let gap=((tgt.lon-S.lon_s)%(2*Math.PI)+2*Math.PI)%(2*Math.PI); gap=Math.max(gap-0.01,0.02); return gap/z.drift_rate; }
+    case 'climb': return 2*DAY;
+    case 'rdv': return 2*DAY;
+    case 'char': return 5*DAY;
+    case 'close': return 1*DAY;
+    case 'push': return z.t_push;
+    case 'verify': return 3*DAY;
+  }
+}
+function enterPhase(i){
+  S.phase=i; S.phaseT=0; S.lonStart=S.lon_s; S.rStart=S.r_s;
+  const name=PHASES[i][0];
+  if(name==='push'){ S.dv=0; S.prop=0; }
+  refreshPhases();
+  $('callout_t').textContent=CALLOUT[name];
+}
+function resetMission(){
+  S.t=0; S.targets=newTargets(); S.idx=0; S.cleared=0; S.dv=0; S.prop=0; S.tumble=0.5;
+  S.r_t=R_GEO; S.lon_t=S.targets[0].lon; S.r_s=R_GEO-DRIFT_ALT; S.lon_s=S.targets[0].lon-0.5; S.sep=0.5*R_GEO;
+  trailLen=0; trailGeo.setDrawRange(0,0);
+  enterPhase(0);
+}
+function step(dt){
+  const z=sizing(); const name=PHASES[S.phase][0]; const dur=phaseDur(S.phase); const f=Math.min(1,S.phaseT/dur);
+  const tgt=S.targets[S.idx];
+  S.beamOn=false;
+  const driftOf=r=>-1.5*N_GEO*(r-R_GEO)/R_GEO; // rad/s relative to GEO frame (below GEO -> +east)
+  switch(name){
+    case 'drift': {
+      const dropF=Math.min(1,S.phaseT/(0.5*DAY));
+      S.r_s=S.rStart+((R_GEO-DRIFT_ALT)-S.rStart)*dropF;
+      S.lon_s+=driftOf(S.r_s)*dt; S.lon_t=tgt.lon; S.r_t=tgt.r; break; }
+    case 'climb': { // spiral up, arrive 2 km behind the target
+      S.r_s=(R_GEO-DRIFT_ALT)+DRIFT_ALT*f;
+      const lonEnd=tgt.lon-2000/R_GEO;
+      S.lon_s=S.lonStart+(lonEnd-S.lonStart)*f; S.lon_t=tgt.lon; S.r_t=tgt.r; break; }
+    case 'rdv': S.r_s=R_GEO; S.lon_s=tgt.lon-(2000-1900*f)/R_GEO; break;
+    case 'char': S.r_s=R_GEO; S.lon_s=tgt.lon-100/R_GEO; break;
+    case 'close': S.r_s=R_GEO; S.lon_s=tgt.lon-(100-(100-P.so)*f)/R_GEO; break;
+    case 'push': {
+      S.beamOn=true;
+      const da=2*z.acc/N_GEO*dt;                     // near-circular low thrust: da/dt ≈ 2·aT/n
+      S.r_t+=da; tgt.r=S.r_t; S.r_s=S.r_t;
+      S.dv+=z.acc*dt; S.prop+=(P.fb+z.f_counter)/(ISP*G0)*dt;
+      S.lon_t+=driftOf(S.r_t)*dt; tgt.lon=S.lon_t; S.lon_s=S.lon_t-P.so/R_GEO;
+      S.tumble=Math.max(0.02,S.tumble*Math.exp(-dt/(4*DAY)));  // beam-torque damping
+      break; }
+    case 'verify': S.r_s=S.r_t; S.lon_t+=driftOf(S.r_t)*dt; tgt.lon=S.lon_t; S.lon_s=S.lon_t-(P.so+(500-P.so)*f)/R_GEO; break;
+  }
+  S.sep=Math.hypot((S.lon_s-S.lon_t)*R_GEO,(S.r_s-S.r_t));
+  S.t+=dt; S.phaseT+=dt;
+  if(S.phaseT>=dur){
+    if(name==='push') S.dv=z.dv_req;
+    if(name==='verify'){ tgt.done=true; S.cleared++; S.idx=(S.idx+1)%S.targets.length; const nt=S.targets[S.idx]; if(nt.done){nt.done=false; nt.r=R_GEO;} S.tumble=0.3+0.4*Math.random(); trailLen=0; trailGeo.setDrawRange(0,0); }
+    enterPhase((S.phase+1)%PHASES.length);
+  }
+}
+
+// ---------- UI ----------
+function refreshPhases(){
+  const el=$('phases'); el.innerHTML='';
+  PHASES.forEach((p,i)=>{
+    const d=document.createElement('div'); d.className='phase'+(i===S.phase?' active':(i<S.phase?' done':''));
+    const dur=phaseDur(i); const lab=(dur/DAY).toFixed(dur<2*DAY?1:0)+' d';
+    d.innerHTML=`<span class="n">${i+1}</span><span><b style="font-weight:500">${p[1]}</b><br><span style="font-size:11px">${p[2]}</span></span><span class="t">${lab}</span>`;
+    el.appendChild(d);
+  });
+}
+function fmtMET(t){const d=Math.floor(t/DAY),h=Math.floor((t%DAY)/3600),m=Math.floor((t%3600)/60);return `T+${d} d ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;}
+function fmtRange(m){ return m<1000? m.toFixed(0)+' m' : (m/1000).toFixed(m<1e5?1:0)+' km'; }
+function updateHUD(prox){
+  const z=sizing();
+  $('h_met').textContent=fmtMET(S.t); $('h_phase').textContent=PHASES[S.phase][1];
+  $('h_cam').textContent=(prox?'Proximity':'Orbit')+(S.cam==='auto'?' (auto)':''); $('h_range').textContent=fmtRange(S.sep);
+  const alt=(S.r_t-RE)/1e3, dh=(S.r_t-R_GEO)/1e3;
+  $('s_alt').textContent=alt.toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1}).replace(/,/g,' ')+' km';
+  $('s_dh').textContent=dh.toFixed(1)+' km'; $('s_dh').className='v'+(dh>=z.dh_req/1e3-0.05?' good':'');
+  $('s_req').textContent=(z.dh_req/1e3).toFixed(0)+' km';
+  $('s_dv').textContent=S.dv.toFixed(2)+' m/s'; $('s_dvreq').textContent=z.dv_req.toFixed(2)+' m/s';
+  $('s_acc').textContent=(z.acc*1e6).toFixed(1)+' µm/s²'; $('s_fc').textContent=(z.f_counter*1e3).toFixed(1)+' mN';
+  $('s_dur').textContent=(z.t_push/DAY).toFixed(1)+' d';
+  $('s_tum').textContent=S.tumble.toFixed(2)+' °/s';
+  $('s_drift').textContent=(-1.5*N_GEO*(S.r_s-R_GEO)/R_GEO*180/Math.PI*DAY).toFixed(2)+' °/day';
+  $('s_n').textContent=S.cleared;
+  $('o_prop').textContent=S.prop.toFixed(1)+' kg'; $('o_propneed').textContent=(z.m_push+z.m_drift).toFixed(1)+' kg';
+  $('propbar').style.width=Math.min(100,100*S.prop/(z.m_push+z.m_drift))+'%';
+}
+function bind(id,key,scale,fmt){ const el=$(id),out=$('o_'+id); const f=()=>{P[key]=parseFloat(el.value)*scale; out.textContent=fmt(parseFloat(el.value)); refreshPhases();}; el.addEventListener('input',f); f(); }
+bind('mt','mt',1,v=>v+' kg'); bind('fb','fb',1e-3,v=>v+' mN'); bind('eta','eta',1,v=>v.toFixed(2)); bind('div','div',1,v=>v+'°');
+bind('so','so',1,v=>v+' m'); bind('am','am',1,v=>v.toFixed(3)+' m²/kg');
+bind('rate','rate',1,v=>{const r=Math.pow(10,v); return r>=1?(r>=10?r.toFixed(0):r.toFixed(1))+' day / s':(r*24).toFixed(1)+' h / s';});
+$('play').onclick=()=>{S.running=!S.running;$('play').textContent=S.running?'Pause':'Play';};
+$('skip').onclick=()=>{ S.phaseT=phaseDur(S.phase); step(0.001); };
+$('reset').onclick=()=>resetMission();
+function setCam(c){S.cam=c;for(const k of ['auto','prox','orbit'])$('cam_'+k).setAttribute('aria-pressed',k===c);}
+$('cam_auto').onclick=()=>setCam('auto'); $('cam_prox').onclick=()=>setCam('prox'); $('cam_orbit').onclick=()=>setCam('orbit');
+
+// ---------- THREE ----------
+const view=$('view');
+const renderer=new THREE.WebGLRenderer({antialias:true}); renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1)); view.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b1128);
+const camera=new THREE.PerspectiveCamera(45,1,0.05,6000);
+scene.add(new THREE.AmbientLight(0x8fa0d0,0.35));
+const sun=new THREE.DirectionalLight(0xfff4e0,1.7); sun.position.set(-400,150,300); scene.add(sun);
+{ const g=new THREE.BufferGeometry(); const N=3000; const a=new Float32Array(N*3);
+  for(let i=0;i<N;i++){const v=new THREE.Vector3().randomDirection().multiplyScalar(2500); a.set([v.x,v.y,v.z],i*3);}
+  g.setAttribute('position',new THREE.BufferAttribute(a,3));
+  scene.add(new THREE.Points(g,new THREE.PointsMaterial({color:0xb8c2dc,size:1.5,sizeAttenuation:false}))); }
+
+// procedural Earth texture
+function earthTexture(){
+  const c=document.createElement('canvas'); c.width=1024; c.height=512; const x=c.getContext('2d');
+  const g=x.createLinearGradient(0,0,0,512); g.addColorStop(0,'#cfe3f5'); g.addColorStop(0.12,'#1c4f96'); g.addColorStop(0.5,'#1a4a8c'); g.addColorStop(0.88,'#1c4f96'); g.addColorStop(1,'#dbe9f5');
+  x.fillStyle=g; x.fillRect(0,0,1024,512);
+  let seed=7; const rnd=()=>{seed=(seed*16807)%2147483647; return seed/2147483647;};
+  for(let k=0;k<26;k++){ const cx=rnd()*1024, cy=80+rnd()*352, n=18+rnd()*40;
+    x.fillStyle=rnd()<0.5?'#5c8a4a':'#7a9a55';
+    for(let j=0;j<n;j++){ const r=8+rnd()*28; x.beginPath(); x.arc(cx+(rnd()-0.5)*120,cy+(rnd()-0.5)*70,r,0,7); x.fill(); } }
+  x.fillStyle='rgba(255,255,255,0.18)'; for(let k=0;k<400;k++){ x.beginPath(); x.arc(rnd()*1024,rnd()*512,2+rnd()*14,0,7); x.fill(); }
+  const t=new THREE.CanvasTexture(c); return t;
+}
+// ----- orbit group: 1 unit = 1000 km -----
+const orbitG=new THREE.Group(); scene.add(orbitG);
+const KM=1e-6, EXAG=30;
+const earth=new THREE.Mesh(new THREE.SphereGeometry(RE*KM,64,48),new THREE.MeshPhongMaterial({map:earthTexture(),shininess:8})); orbitG.add(earth);
+orbitG.add(new THREE.Mesh(new THREE.SphereGeometry(RE*KM*1.03,48,32),new THREE.MeshBasicMaterial({color:0x5aa8ff,transparent:true,opacity:0.10,side:THREE.BackSide})));
+const rotI=new THREE.Matrix4().makeRotationX(INC);
+function ringGeo(r,inc){ const pts=[]; for(let i=0;i<=360;i++){const a=i/360*2*Math.PI; const v=new THREE.Vector3(r*Math.cos(a),0,r*Math.sin(a)); if(inc) v.applyMatrix4(rotI); pts.push(v);} return new THREE.BufferGeometry().setFromPoints(pts); }
+orbitG.add(new THREE.Line(ringGeo(R_GEO*KM,false),new THREE.LineBasicMaterial({color:0x8b95b5,transparent:true,opacity:0.7})));
+const clusterRing=new THREE.Line(ringGeo(R_GEO*KM,true),new THREE.LineBasicMaterial({color:0xf2b955,transparent:true,opacity:0.55})); orbitG.add(clusterRing);
+const graveRing=new THREE.Line(ringGeo(1,true),new THREE.LineDashedMaterial({color:0x3ecfb5,transparent:true,opacity:0.8,dashSize:0.8,gapSize:0.5})); orbitG.add(graveRing);
+const driftRing=new THREE.Line(ringGeo((R_GEO-DRIFT_ALT*EXAG)*KM,true),new THREE.LineDashedMaterial({color:0x9aa5c4,transparent:true,opacity:0.35,dashSize:0.5,gapSize:0.6})); driftRing.computeLineDistances(); orbitG.add(driftRing);
+function orbitPos(r,lon){ const rr=R_GEO+(r-R_GEO)*EXAG; return new THREE.Vector3(rr*KM*Math.cos(lon),0,rr*KM*Math.sin(lon)).applyMatrix4(rotI); }
+const tgtDot=new THREE.Mesh(new THREE.SphereGeometry(0.5,16,12),new THREE.MeshBasicMaterial({color:0xf2b955})); orbitG.add(tgtDot);
+const shepDot=new THREE.Mesh(new THREE.SphereGeometry(0.4,16,12),new THREE.MeshBasicMaterial({color:0x3ecfb5})); orbitG.add(shepDot);
+const otherDots=[]; for(let i=0;i<6;i++){const d=new THREE.Mesh(new THREE.SphereGeometry(0.35,12,10),new THREE.MeshBasicMaterial({color:0xf2b955})); orbitG.add(d); otherDots.push(d);}
+const trailN=900, trailArr=new Float32Array(trailN*3); const trailGeo=new THREE.BufferGeometry(); trailGeo.setAttribute('position',new THREE.BufferAttribute(trailArr,3)); trailGeo.setDrawRange(0,0);
+orbitG.add(new THREE.Line(trailGeo,new THREE.LineBasicMaterial({color:0xa9c4ea,transparent:true,opacity:0.9}))); let trailLen=0, trailAcc=0;
+const linkGeo=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]);
+const linkLine=new THREE.Line(linkGeo,new THREE.LineBasicMaterial({color:0x3ecfb5,transparent:true,opacity:0.6})); orbitG.add(linkLine);
+
+// ----- proximity group: metres, target at origin, prograde = +X -----
+const proxG=new THREE.Group(); scene.add(proxG);
+const derelict=new THREE.Group(); proxG.add(derelict);
+{ const mli=new THREE.MeshStandardMaterial({color:0xc9a24a,metalness:0.7,roughness:0.35});
+  derelict.add(new THREE.Mesh(new THREE.BoxGeometry(2.2,2.6,2.0),mli));
+  const panel=new THREE.MeshStandardMaterial({color:0x1f2f5e,metalness:0.4,roughness:0.5,side:THREE.DoubleSide});
+  const grey=new THREE.MeshStandardMaterial({color:0x9aa0aa,metalness:0.6,roughness:0.5});
+  for(const s of [-1,1]){ const w=new THREE.Mesh(new THREE.BoxGeometry(0.06,2.4,9),panel); w.position.set(0,0,s*5.6); derelict.add(w);
+    const boom=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,1.2),grey); boom.rotation.x=Math.PI/2; boom.position.set(0,0,s*1.6); derelict.add(boom); }
+  const dish=new THREE.Mesh(new THREE.SphereGeometry(1.4,24,12,0,Math.PI*2,0,Math.PI/3),new THREE.MeshStandardMaterial({color:0xe6e6e6,metalness:0.2,roughness:0.6,side:THREE.DoubleSide}));
+  dish.rotation.x=Math.PI/2; dish.position.set(0,1.3,0.2); dish.scale.z=0.6; derelict.add(dish);
+  const nozzle=new THREE.Mesh(new THREE.CylinderGeometry(0.35,0.2,0.6,16,1,true),new THREE.MeshStandardMaterial({color:0x555,side:THREE.DoubleSide})); nozzle.rotation.z=Math.PI/2; nozzle.position.set(-1.3,0,0); derelict.add(nozzle);
+}
+const shepherd=new THREE.Group(); proxG.add(shepherd);
+{ const m=new THREE.MeshStandardMaterial({color:0xc4ccdc,metalness:0.7,roughness:0.3});
+  shepherd.add(new THREE.Mesh(new THREE.BoxGeometry(1.2,1.2,1.4),m));
+  const pm=new THREE.MeshStandardMaterial({color:0x1f2f5e,metalness:0.4,roughness:0.5,side:THREE.DoubleSide});
+  for(const s of [-1,1]){ const w=new THREE.Mesh(new THREE.BoxGeometry(0.05,1.1,4),pm); w.position.set(0,0,s*2.8); shepherd.add(w); }
+  const tm=new THREE.MeshStandardMaterial({color:0x777,metalness:0.8,roughness:0.4,side:THREE.DoubleSide});
+  const th1=new THREE.Mesh(new THREE.CylinderGeometry(0.30,0.2,0.4,20,1,true),tm); th1.rotation.z=-Math.PI/2; th1.position.set(0.8,0,0); shepherd.add(th1);
+  const th2=new THREE.Mesh(new THREE.CylinderGeometry(0.24,0.16,0.35,20,1,true),tm); th2.rotation.z=Math.PI/2; th2.position.set(-0.78,0,0); shepherd.add(th2);
+  const head=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.3,0.3),new THREE.MeshStandardMaterial({color:0x222,roughness:0.2})); head.position.set(0.6,0.55,0); shepherd.add(head);
+}
+const beamMat=new THREE.MeshBasicMaterial({color:0xa9c4ea,transparent:true,opacity:0.14,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending});
+const counterMat=new THREE.MeshBasicMaterial({color:0x3ecfb5,transparent:true,opacity:0.18,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending});
+const beamCone=new THREE.Mesh(new THREE.ConeGeometry(1,1,40,1,true),beamMat); proxG.add(beamCone);
+const counterCone=new THREE.Mesh(new THREE.ConeGeometry(1,1,40,1,true),counterMat); proxG.add(counterCone);
+function particles(N,color,size){ const pos=new Float32Array(N*3), t=new Float32Array(N), ang=new Float32Array(N*2);
+  for(let i=0;i<N;i++){t[i]=Math.random(); ang[i*2]=Math.random()*2*Math.PI; ang[i*2+1]=Math.pow(Math.random(),0.55);}
+  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const pts=new THREE.Points(g,new THREE.PointsMaterial({color,size,transparent:true,opacity:0.95,blending:THREE.AdditiveBlending,depthWrite:false})); proxG.add(pts);
+  return {N,pos,t,ang,g,pts}; }
+const beamP=particles(1100,0xcfe0ff,0.09), counterP=particles(400,0xa6f0e0,0.07);
+function advance(p,x0,dir,L,tanH,sp){ for(let i=0;i<p.N;i++){ p.t[i]+=sp*(0.6+0.4*Math.random()); if(p.t[i]>1)p.t[i]-=1; const s=p.t[i], r=s*L*tanH*p.ang[i*2+1];
+  p.pos[i*3]=x0+dir*s*L; p.pos[i*3+1]=r*Math.cos(p.ang[i*2]); p.pos[i*3+2]=r*Math.sin(p.ang[i*2]); } p.g.attributes.position.needsUpdate=true; }
+const fArrow=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(1.4,-3.4,0),3,0xa9c4ea,0.7,0.35); proxG.add(fArrow);
+const sArrow=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(0,-3.4,0),2,0xe9edf6,0.6,0.3); proxG.add(sArrow);
+const dimLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]),new THREE.LineDashedMaterial({color:0x9aa5c4,dashSize:0.4,gapSize:0.25})); proxG.add(dimLine);
+const farEarth=new THREE.Mesh(new THREE.SphereGeometry(22,32,24),new THREE.MeshPhongMaterial({map:earthTexture(),shininess:6})); farEarth.position.set(-40,-140,-300); proxG.add(farEarth);
+// label sprites
+function label(text,color){ const c=document.createElement('canvas'); c.width=512; c.height=96; const x=c.getContext('2d'); x.font='500 40px "Fira Code", monospace'; x.fillStyle=color; x.textAlign='center'; x.textBaseline='middle'; x.fillText(text,256,48);
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),transparent:true,depthTest:false})); s.scale.set(8,1.5,1); proxG.add(s); return s; }
+const lblForce=label('force on target','#a9c4ea'), lblFollow=label('shepherd follows','#e9edf6'), lblSO=label('standoff','#9aa5c4'), lblCounter=label('counter‑thrust','#3ecfb5');
+
+// ---------- loop ----------
+let last=performance.now(), spin=0, camA=0;
+function resize(){const w=view.clientWidth,h=view.clientHeight; renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();}
+window.addEventListener('resize',resize); resize();
+function frame(now){
+  requestAnimationFrame(frame);
+  const real=Math.min(0.1,(now-last)/1000); last=now;
+  if(S.running){ const dt=real*Math.pow(10,P.rate)*DAY; const sub=Math.max(1,Math.ceil(dt/(0.1*DAY))); for(let i=0;i<sub;i++) step(dt/sub); spin+=real*S.tumble*2; camA+=real*0.06; }
+  const name=PHASES[S.phase][0];
+  const prox = S.cam==='prox' || (S.cam==='auto' && ['rdv','char','close','push','verify'].includes(name) && S.sep<600);
+  proxG.visible=prox; orbitG.visible=!prox;
+  if(prox){
+    const sep=Math.min(S.sep,120);
+    derelict.rotation.set(spin*0.7,spin*0.45,spin*0.25);
+    shepherd.position.set(-sep,0,0);
+    const half=P.div*Math.PI/180, L=Math.max(sep-1.6,0.5), tanH=Math.tan(half);
+    beamCone.visible=counterCone.visible=beamP.pts.visible=counterP.pts.visible=S.beamOn;
+    fArrow.visible=sArrow.visible=lblForce.visible=lblFollow.visible=lblCounter.visible=S.beamOn;
+    if(S.beamOn){
+      beamCone.geometry.dispose(); beamCone.geometry=new THREE.ConeGeometry(L*tanH,L,40,1,true); beamCone.rotation.z=-Math.PI/2; beamCone.position.set(-sep+1+L/2,0,0);
+      const Lc=7, tc=Math.tan(22*Math.PI/180);
+      counterCone.geometry.dispose(); counterCone.geometry=new THREE.ConeGeometry(Lc*tc,Lc,40,1,true); counterCone.rotation.z=Math.PI/2; counterCone.position.set(-sep-0.9-Lc/2,0,0);
+      const sp=S.running?real*2.5:0; advance(beamP,-sep+1,1,L,tanH,sp); advance(counterP,-sep-0.9,-1,Lc,tc,sp);
+      fArrow.position.set(1.4,-3.4,0); sArrow.position.set(-sep-1.2,-3.4,0);
+      lblForce.position.set(3,-4.6,0); lblFollow.position.set(-sep,-4.6,0); lblCounter.position.set(-sep-5,2.2,0);
+    }
+    dimLine.geometry.setFromPoints([new THREE.Vector3(-sep,3.2,0),new THREE.Vector3(0,3.2,0)]); dimLine.computeLineDistances(); dimLine.visible=sep<120;
+    lblSO.position.set(-sep/2,4.2,0); lblSO.visible=dimLine.visible; lblSO.material.map.dispose();
+    { const c=document.createElement('canvas'); c.width=512; c.height=96; const x=c.getContext('2d'); x.font='500 40px "Fira Code", monospace'; x.fillStyle='#9aa5c4'; x.textAlign='center'; x.textBaseline='middle'; x.fillText('standoff '+fmtRange(S.sep),256,48); lblSO.material.map=new THREE.CanvasTexture(c); }
+    const mid=-sep/2, R=sep*1.15+12;
+    camera.position.set(mid+R*Math.sin(camA)*0.85, R*0.32, R*Math.cos(camA)); camera.lookAt(mid,0,0); camera.near=0.1; camera.far=3000;
+  } else {
+    tgtDot.position.copy(orbitPos(S.r_t,S.lon_t)); shepDot.position.copy(orbitPos(S.r_s,S.lon_s));
+    linkLine.geometry.setFromPoints([tgtDot.position,shepDot.position]); linkLine.visible=S.sep<50e3;
+    otherDots.forEach((d,i)=>{ const t=S.targets[i]; d.visible=!!t && i!==S.idx; if(d.visible){ d.position.copy(orbitPos(t.r,t.lon)); d.material.color.set(t.done?0x3ecfb5:0xf2b955);} });
+    const z=sizing(); const gr=(R_GEO+z.dh_req*EXAG)*KM; graveRing.geometry.dispose(); graveRing.geometry=ringGeo(gr,true); graveRing.computeLineDistances();
+    if(S.running&&S.beamOn){ trailAcc+=real; if(trailAcc>0.04&&trailLen<trailN){ trailAcc=0; const p=tgtDot.position; trailArr.set([p.x,p.y,p.z],trailLen*3); trailLen++; trailGeo.setDrawRange(0,trailLen); trailGeo.attributes.position.needsUpdate=true; } }
+    earth.rotation.y+=real*0.05;
+    const R=88; camera.position.set(R*Math.sin(camA*0.4)*0.9, R*0.62, R*Math.cos(camA*0.4)); camera.lookAt(0,0,0); camera.near=0.5; camera.far=6000;
+  }
+  camera.updateProjectionMatrix(); updateHUD(prox); renderer.render(scene,camera);
+}
+resetMission(); requestAnimationFrame(frame);
+})();
+</script>

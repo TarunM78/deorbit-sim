@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prox.js harness</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1128; color: #cfd8ff; font: 12px "Fira Code", Consolas, monospace; overflow: hidden; }
+  #view { position: absolute; inset: 0; }
+  #ui { position: absolute; top: 10px; left: 10px; display: flex; flex-direction: column; gap: 6px; z-index: 2; }
+  #ui div { display: flex; gap: 6px; flex-wrap: wrap; }
+  button { background: #16213f; color: #cfd8ff; border: 1px solid #3a4a80; padding: 5px 9px; font: inherit; cursor: pointer; border-radius: 3px; }
+  button.on { background: #3ecfb5; color: #0b1128; border-color: #3ecfb5; }
+  #hud { position: absolute; bottom: 10px; left: 10px; white-space: pre; opacity: 0.85; z-index: 2; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="ui">
+  <div>
+    <button data-mode="ibsLeo">IBS LEO (shep +X, beam -X)</button>
+    <button data-mode="ibsGeo">IBS GEO (shep -X, beam +X)</button>
+    <button data-mode="kit">Kit (shep -X)</button>
+    <button data-mode="kitPlus">Kit (shep +X)</button>
+  </div>
+  <div>
+    <button data-kind="rocketbody">rocketbody SL-8</button>
+    <button data-kind="sl16">rocketbody SL-16</button>
+    <button data-kind="comsat">comsat</button>
+    <button data-kind="smallsat">smallsat</button>
+  </div>
+  <div>
+    <button id="beam">beam</button>
+    <button id="counter">counter</button>
+    <button id="orbit">mouse orbit</button>
+    <button id="pause">pause kit cycle</button>
+    <label>tumble <input id="tumble" type="range" min="0" max="5" step="0.1" value="1"></label>
+    <label>half-angle <input id="half" type="range" min="4" max="25" step="1" value="10"></label>
+  </div>
+</div>
+<div id="hud"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+<script src="js/prox.js"></script>
+<script>
+(function () {
+  var state = {
+    regime: 'LEO', tech: 'ibs', t: 0, dt: 0.5, warp: 1,
+    shepherd: { kits: 6, kitsCap: 8 },
+    targets: [{ id: 't1', name: 'SL-8 R/B', kind: 'rocketbody', length: 6.5, diam: 2.4, tumble: 1 }],
+    current: 0,
+    prox: { active: true, sep: 15, shepPos: { x: 15, y: 0, z: 0 }, beamOn: true, counterOn: true, beamHalfAngleDeg: 10, standoff: 15,
+      tumble: 1, arm: 0, kitAttached: false, kitBurn: false, targetKind: 'rocketbody', targetLength: 6.5, targetDiam: 2.4 }
+  };
+  var mode = 'ibsLeo', kitSide = -1, kitT = 0, paused = false;
+  var kinds = { rocketbody: ['rocketbody', 6.5, 2.4], sl16: ['rocketbody', 11, 3.9], comsat: ['comsat', 2.2, 2.6], smallsat: ['smallsat', 1, 1] };
+
+  function setMode(m) {
+    mode = m; kitT = 0;
+    var p = state.prox;
+    if (m === 'ibsLeo' || m === 'ibsGeo') {
+      state.tech = 'ibs'; state.regime = m === 'ibsLeo' ? 'LEO' : 'GEO';
+      p.sep = 15; p.standoff = 15; p.shepPos = { x: m === 'ibsLeo' ? 15 : -15, y: 0, z: 0 };
+      p.beamOn = true; p.counterOn = true; p.arm = 0; p.kitAttached = false; p.kitBurn = false;
+    } else {
+      state.tech = 'kit'; state.regime = 'LEO'; kitSide = m === 'kitPlus' ? 1 : -1;
+      p.beamOn = false; p.counterOn = false; p.arm = 0; p.kitAttached = false; p.kitBurn = false;
+      state.shepherd.kits = 6;
+    }
+    document.querySelectorAll('[data-mode]').forEach(function (b) { b.classList.toggle('on', b.dataset.mode === m); });
+  }
+  function setKind(k) {
+    var d = kinds[k]; var p = state.prox;
+    p.targetKind = d[0]; p.targetLength = d[1]; p.targetDiam = d[2];
+    state.targets[0].kind = d[0]; state.targets[0].length = d[1]; state.targets[0].diam = d[2];
+    document.querySelectorAll('[data-kind]').forEach(function (b) { b.classList.toggle('on', b.dataset.kind === k); });
+  }
+  document.querySelectorAll('[data-mode]').forEach(function (b) { b.onclick = function () { setMode(b.dataset.mode); }; });
+  document.querySelectorAll('[data-kind]').forEach(function (b) { b.onclick = function () { setKind(b.dataset.kind); }; });
+  var beamBtn = document.getElementById('beam'), counterBtn = document.getElementById('counter'), orbitBtn = document.getElementById('orbit'), pauseBtn = document.getElementById('pause');
+  beamBtn.onclick = function () { state.prox.beamOn = !state.prox.beamOn; };
+  counterBtn.onclick = function () { state.prox.counterOn = !state.prox.counterOn; };
+  var orbit = false;
+  orbitBtn.onclick = function () { orbit = !orbit; SIM.prox.setUserOrbit(orbit); orbitBtn.classList.toggle('on', orbit); };
+  pauseBtn.onclick = function () { paused = !paused; pauseBtn.classList.toggle('on', paused); };
+  document.getElementById('tumble').oninput = function (e) { state.prox.tumble = +e.target.value; state.targets[0].tumble = +e.target.value; };
+  document.getElementById('half').oninput = function (e) { state.prox.beamHalfAngleDeg = +e.target.value; };
+
+  var view = document.getElementById('view');
+  SIM.prox.init(view);
+  window.addEventListener('resize', function () { SIM.prox.resize(); });
+  setMode('ibsLeo'); setKind('rocketbody');
+
+  // kit cycle (12 s): approach 0-3 s, arm 3-7 s, attach 7-8 s, burn 8.5-11 s, hold, repeat
+  function kitCycle(dt) {
+    var p = state.prox;
+    if (!paused) kitT += dt;
+    var T = kitT % 12;
+    var sepAttach = SIM.prox.attachSep(p.targetKind, p.targetLength, p.targetDiam);
+    var sep = T < 3 ? sepAttach + 10 * (1 - T / 3) : sepAttach;
+    p.sep = sep; p.shepPos = { x: kitSide * sep, y: 0, z: 0 };
+    p.arm = T < 3 ? 0 : T < 7 ? (T - 3) / 4 : 1;
+    p.kitAttached = T >= 7;
+    p.kitBurn = T >= 8.5 && T < 11;
+    // set effectively zero tumble in kit mode once close, like a de-tumbled target would be
+    p.tumble = T < 3 ? +document.getElementById('tumble').value : 0.15;
+    if (T >= 11.5 && p.arm === 1) { p.arm = 1 - (T - 11.5) * 2; }
+  }
+
+  var hud = document.getElementById('hud'), last = performance.now(), frames = 0, fpsT = 0, fps = 0;
+  function step(dt) {
+    state.t += dt * state.warp; state.dt = dt * state.warp;
+    if (state.tech === 'kit') kitCycle(dt);
+    SIM.prox.update(state, dt);
+    SIM.prox.render();
+    frames++; fpsT += dt; if (fpsT > 0.5) { fps = Math.round(frames / fpsT); frames = 0; fpsT = 0; }
+    beamBtn.classList.toggle('on', state.prox.beamOn); counterBtn.classList.toggle('on', state.prox.counterOn);
+    var p = state.prox;
+    hud.textContent = 'mode ' + mode + '  fps ' + fps + '\nshepPos ' + p.shepPos.x.toFixed(1) + ',' + p.shepPos.y + ',' + p.shepPos.z +
+      '  sep ' + p.sep.toFixed(1) + '\narm ' + p.arm.toFixed(2) + '  kitAttached ' + p.kitAttached + '  kitBurn ' + p.kitBurn + '  kits ' + state.shepherd.kits +
+      '\ntumble ' + p.tumble + ' deg/s  half-angle ' + p.beamHalfAngleDeg + '°';
+  }
+  function loop(now) {
+    var dt = Math.min(0.1, (now - last) / 1000); last = now;
+    step(dt);
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+  window.__state = state;
+  window.__tick = function (dt, n) { for (var i = 0; i < (n || 1); i++) step(dt); };
+  window.__setMode = setMode; window.__setKind = setKind; window.__setKitT = function (t) { kitT = t; };
+})();
+</script>
+</body>
+</html>
